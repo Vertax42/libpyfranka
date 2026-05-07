@@ -1,0 +1,19 @@
+# Build artifacts
+build/
+*.o
+*.so
+*.dylib
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+
+# Claude Code local config
+.claude/
