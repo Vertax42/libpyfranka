@@ -157,34 +157,48 @@ public:
         return std::max({t_p, t_r, min_dur});
     }
 
-    void init(const std::array<double, 16>& start_pose,
-              const std::array<double, 16>& end_pose,
-              double duration_sec) noexcept {
-        detail::mat4ToPosQuat(start_pose, p0_, q0_);
+	    void init(const std::array<double, 16>& start_pose,
+	              const std::array<double, 16>& end_pose,
+	              double duration_sec) noexcept {
+	        detail::mat4ToPosQuat(start_pose, p0_, q0_);
         detail::mat4ToPosQuat(end_pose, p1_, q1_);
         // Short-arc
         if (detail::quatDot(q0_, q1_) < 0.0) {
             for (int i = 0; i < 4; ++i) q1_[i] = -q1_[i];
         }
-        if (duration_sec <= 0.0) duration_sec = computeDuration(start_pose, end_pose);
-        total_steps_ = std::max<uint32_t>(1, static_cast<uint32_t>(duration_sec * 1000.0));
-        current_step_ = 0;
-        active_ = true;
-        cancelled_ = false;
-    }
+	        if (duration_sec <= 0.0) duration_sec = computeDuration(start_pose, end_pose);
+	        duration_sec_ = std::max(duration_sec, 0.001);
+	        total_steps_ = std::max<uint32_t>(1, static_cast<uint32_t>(duration_sec_ * 1000.0));
+	        current_step_ = 0;
+	        elapsed_sec_ = 0.0;
+	        active_ = true;
+	        cancelled_ = false;
+	    }
+	
+	    bool step(std::array<double, 16>& out_pose) noexcept {
+	        if (!active_ || cancelled_) return false;
+	        current_step_++;
+	        double tau = static_cast<double>(current_step_) / total_steps_;
+	        return sample(tau, out_pose);
+	    }
 
-    bool step(std::array<double, 16>& out_pose) noexcept {
-        if (!active_ || cancelled_) return false;
-        current_step_++;
-        if (current_step_ >= total_steps_) {
-            detail::posQuatToMat4(p1_, q1_, out_pose);
-            active_ = false;
-            return false;
-        }
-        double tau = static_cast<double>(current_step_) / total_steps_;
-        double tau2 = tau * tau, tau3 = tau2 * tau;
-        double s = 10.0 * tau3 - 15.0 * tau3 * tau + 6.0 * tau3 * tau2;
-        std::array<double, 3> p;
+	    bool step(double dt_sec, std::array<double, 16>& out_pose) noexcept {
+	        if (!active_ || cancelled_) return false;
+	        elapsed_sec_ += std::max(dt_sec, 1e-6);
+	        double tau = elapsed_sec_ / duration_sec_;
+	        return sample(tau, out_pose);
+	    }
+
+	    bool sample(double tau, std::array<double, 16>& out_pose) noexcept {
+	        if (tau >= 1.0) {
+	            detail::posQuatToMat4(p1_, q1_, out_pose);
+	            active_ = false;
+	            return false;
+	        }
+	        tau = std::clamp(tau, 0.0, 1.0);
+	        double tau2 = tau * tau, tau3 = tau2 * tau;
+	        double s = 10.0 * tau3 - 15.0 * tau3 * tau + 6.0 * tau3 * tau2;
+	        std::array<double, 3> p;
         for (int i = 0; i < 3; ++i) p[i] = p0_[i] + s * (p1_[i] - p0_[i]);
         std::array<double, 4> q;
         detail::slerp(q0_, q1_, s, q);
@@ -196,10 +210,12 @@ public:
     bool isActive() const noexcept { return active_ && !cancelled_; }
 
 private:
-    std::array<double, 3> p0_{}, p1_{};
-    std::array<double, 4> q0_{1, 0, 0, 0}, q1_{1, 0, 0, 0};
-    uint32_t total_steps_ = 0, current_step_ = 0;
-    bool active_ = false, cancelled_ = false;
-};
+	    std::array<double, 3> p0_{}, p1_{};
+	    std::array<double, 4> q0_{1, 0, 0, 0}, q1_{1, 0, 0, 0};
+	    uint32_t total_steps_ = 0, current_step_ = 0;
+	    double duration_sec_ = 1.0;
+	    double elapsed_sec_ = 0.0;
+	    bool active_ = false, cancelled_ = false;
+	};
 
 }  // namespace franka_rt
