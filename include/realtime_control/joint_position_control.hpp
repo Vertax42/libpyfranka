@@ -2,50 +2,55 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <memory>
 #include <mutex>
-#include <string>
 #include <thread>
 
-#include <franka/active_control_base.h>
 #include <franka/robot.h>
-#include <franka/robot_state.h>
 
 #include "realtime_control/joint_state.hpp"
+#include "realtime_control/shared_memory.hpp"
 #include "realtime_control/trajectory.hpp"
 
 namespace franka_rt {
 
+/// One Python→RT joint command queue entry.
+struct JointCommand {
+    std::array<double, 7> q{};
+    std::chrono::steady_clock::time_point timestamp;
+};
+
 /// 1 kHz joint-position streaming controller.
 ///
-/// Python writes a 7D target via `setTargetJoints()`.  An RT thread reads
-/// libfranka state via `ActiveControlBase::readOnce()`, linearly interpolates
-/// from the last commanded position toward the latest target (per cycle), and
-/// writes the result via `writeOnce(JointPositions{...})`.
+/// Architecture (mirrors CartesianControl):
+///   Python `setTargetJoints(...)` → SPSC ring buffer → libfranka 1 kHz
+///   callback → continuous online trajectory generator drives `stream_q`
+///   toward the latest target with bounded jerk → libfranka's internal
+///   joint-impedance controller does the actual tracking.
 ///
-/// libfranka runs an internal joint-impedance tracking controller behind the
-/// streamed positions (`ControllerMode::kJointImpedance`).
+/// We use `robot.control(callback, kJointImpedance, limit_rate=true)` rather
+/// than `startJointPositionControl + readOnce/writeOnce`.  Reasons documented
+/// in CartesianControl::rtLoop().
 class JointPositionControl {
 public:
-    JointPositionControl(franka::Robot& robot, double max_joint_step_per_cycle = 0.001);
+    explicit JointPositionControl(franka::Robot& robot);
     ~JointPositionControl();
 
     JointPositionControl(const JointPositionControl&) = delete;
     JointPositionControl& operator=(const JointPositionControl&) = delete;
 
     // ---- Lifecycle ----
-    void start();                          // launch RT thread + libfranka active control
-    void stop();                           // signal stop, join RT thread
+    void start();
+    void stop();
     bool isRunning() const noexcept { return running_.load(); }
     void triggerEstop() noexcept { estop_.store(true); }
 
-    // ---- Python-facing ----
+    // ---- Streaming target API ----
     void setTargetJoints(const std::array<double, 7>& q) noexcept;
     JointState getState() const noexcept;
 
-    // Non-blocking move from current position to target via min-jerk-ish
-    // joint trajectory at 1 kHz.  Sets is_moving() until trajectory completes.
-    void moveToJoints(const std::array<double, 7>& q, double duration_sec = 0.0) noexcept;
+    // ---- Reset trajectory: non-blocking RT-mode min-jerk move ----
+    void moveToJoints(const std::array<double, 7>& q,
+                      double duration_sec = 0.0) noexcept;
     bool isMoving() const noexcept { return moving_.load(); }
     void cancelMove() noexcept;
 
@@ -53,25 +58,28 @@ private:
     void rtLoop();
 
     franka::Robot& robot_;
-    std::unique_ptr<franka::ActiveControlBase> ac_;
     std::thread rt_thread_;
 
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> estop_{false};
     std::atomic<bool> moving_{false};
+    std::atomic<bool> stopped_{false};
 
-    double max_step_;  // max per-cycle joint delta [rad/s × dt]
+    // SPSC ring buffer (Python writer → RT reader).
+    RealTimeBuffer<JointCommand, 8> cmd_buf_;
 
-    // Shared state between Python and RT
-    mutable std::mutex mtx_;
-    std::array<double, 7> target_q_{};
-    bool target_set_ = false;
+    // moveToJoints request (single-pending).  The RT callback only uses
+    // try_lock() on this mutex so Python cannot stall the 1 kHz loop.
+    mutable std::mutex pending_move_mtx_;
+    std::array<double, 7> pending_move_target_{};
+    double                pending_move_duration_ = 0.0;
+    bool                  pending_move_init_ = false;
+
+    // Latest snapshot of robot state for Python reads.  The RT callback
+    // updates it opportunistically with try_lock() to avoid priority inversion.
+    mutable std::mutex state_mtx_;
     JointState latest_state_{};
-    JointLinearTrajectory traj_{};
-    bool traj_pending_init_ = false;
-    std::array<double, 7> pending_traj_target_{};
-    double pending_traj_duration_ = 0.0;
 };
 
 }  // namespace franka_rt
