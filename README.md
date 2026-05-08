@@ -86,6 +86,7 @@ cmake --build build -j$(nproc) --target install
 ### 2. Build & install libpyfranka
 
 ```bash
+conda activate xensehand
 cd libpyfranka
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_PREFIX_PATH=$HOME/franka_install \
@@ -95,6 +96,10 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
 cmake --build build -j$(nproc)
 pip install -e .
 ```
+
+Build and run from the same Python environment.  The extension filename embeds
+the CPython ABI, e.g. `_franka_rt.cpython-310-...so`; importing it from Python
+3.13 will fail even if the C++ build succeeded.
 
 `fmt_DIR` is required when libfranka was built against the system fmt but you
 run from a conda env.  Both libraries must agree on the `libfmt.so.X` ABI; the
@@ -112,6 +117,35 @@ Either run with `sudo -E`, or grant your user `SCHED_FIFO`:
 
 ## Quick start
 
+### Robot setup before control
+
+Call NRT configuration methods **before** `start_*_control()`.  The constructor
+already installs conservative defaults, but teleop deployments should make the
+tool/load and stiffness explicit:
+
+```python
+import franka_rt as fr
+
+robot = fr.Robot(
+    "192.168.99.111",
+    fr.RealtimeConfig.kIgnore,
+    load_mass=0.35,                    # kg, 0.0 if no payload
+    load_com=[0.0, 0.0, 0.06],          # payload COM in flange frame [m]
+)
+
+# Cartesian stiffness: [x, y, z, roll, pitch, yaw]
+# translation in N/m, rotation in Nm/rad.
+robot.set_cartesian_impedance([800, 800, 800, 80, 80, 80])
+
+# Joint stiffness, one value per joint, Nm/rad.  libfranka exposes stiffness K
+# only; damping is handled internally by Franka's impedance controller.
+robot.set_joint_impedance([1500, 1500, 1500, 1200, 1000, 800, 600])
+```
+
+`set_cartesian_impedance`, `set_joint_impedance`, `set_collision_behavior`,
+`set_load`, `set_EE`, and `set_K` are NRT commands.  Do not call them from
+inside the 1 kHz control loop.
+
 ### Cartesian-pose streaming
 
 ```python
@@ -126,6 +160,28 @@ with fr.Robot("192.168.99.111", fr.RealtimeConfig.kIgnore) as robot:
             T[0, 3] += 0.05 * np.sin(2 * np.pi * 0.2 * (time.monotonic() - t0))
             cc.set_target_pose(T)
             time.sleep(1/30)                        # 30 Hz writer is fine
+```
+
+### Episode reset without leaving RT mode
+
+`move_to_pose()` and `move_to_joints()` run a min-jerk trajectory inside the
+C++ control thread and return immediately.  This matches the `libpyflexiv`
+pattern: cache an episode start pose, skip teleop writes while `is_moving()`,
+then resume streaming after the reset finishes.
+
+```python
+with fr.Robot("192.168.99.111", fr.RealtimeConfig.kIgnore) as robot:
+    with robot.start_cartesian_pose_control(fr.ControllerMode.CartesianImpedance) as cc:
+        initial_T = cc.get_state()["O_T_EE_c"].copy()
+
+        # ... teleop streaming ...
+
+        cc.move_to_pose(initial_T, duration_sec=3.0)
+        while cc.is_moving():
+            obs = cc.get_state()     # still safe during the RT reset
+            time.sleep(0.02)
+
+        # Resume set_target_pose(...) after the reset.
 ```
 
 ### Joint-position streaming
@@ -156,6 +212,28 @@ state["control_command_success_rate"]
 ```
 
 Full state dict fields are listed in `src/franka_rt.cpp::getState`.
+
+## Impedance Modes
+
+`CartesianControl` can stream the same 4×4 target pose through either built-in
+libfranka controller:
+
+```python
+robot.start_cartesian_pose_control(fr.ControllerMode.CartesianImpedance)
+robot.start_cartesian_pose_control(fr.ControllerMode.JointImpedance)
+```
+
+Use `CartesianImpedance` for teleoperation and contact-rich tasks.  It tracks
+the target in Cartesian space with compliance set by
+`robot.set_cartesian_impedance([Kx, Ky, Kz, Kr, Kp, Kyaw])`.
+
+Use `JointImpedance` when you want stiffer pose tracking through libfranka's IK
+and joint impedance controller.  Its stiffness comes from
+`robot.set_joint_impedance([K1, ..., K7])`.
+
+libfranka does **not** expose user-settable damping arrays for these internal
+controllers.  Our internal `kKp/kKd/kMaxVel/kMaxAcc/kMaxJerk` constants are
+only target-smoothing parameters; they are not robot impedance gains.
 
 ## Two RT-design rules to remember
 
