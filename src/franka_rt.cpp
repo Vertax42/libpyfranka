@@ -531,7 +531,7 @@ PYBIND11_MODULE(_franka_rt, m) {
         .def("set_joint_impedance", &PyRobot::setJointImpedance, py::arg("K"),
              "NRT command — sets gains for libfranka's internal joint\n"
              "impedance controller (used by start_joint_position_control and\n"
-             "start_cartesian_pose_control(impedance_mode='joint')).")
+             "start_cartesian_pose_control(ControllerMode.JointImpedance)).")
         .def("set_cartesian_impedance", &PyRobot::setCartesianImpedance, py::arg("K"),
              "NRT command — sets 6D Cartesian stiffness for libfranka's\n"
              "internal Cartesian impedance controller.  Range: K_x[0:3] in\n"
@@ -587,8 +587,8 @@ PYBIND11_MODULE(_franka_rt, m) {
              "    end-effector behavior (recommended for teleop).\n\n"
              "Returns a CartesianControl object whose RT thread runs in C++,\n"
              "decoupled from the Python GIL.  Use set_target_pose(T) at any\n"
-             "rate; the RT thread interpolates to 1 kHz and applies\n"
-             "franka::limitRate per cycle.");
+             "rate; the C++ callback converts sparse targets into a smooth\n"
+             "1 kHz stream and libfranka applies limit_rate=true internally.");
 
     py::class_<PyJointPositionControl>(m, "JointPositionControl")
         .def("set_target_joints", &PyJointPositionControl::setTargetJoints, py::arg("q"))
@@ -605,10 +605,10 @@ PYBIND11_MODULE(_franka_rt, m) {
 
     py::class_<PyCartesianControl>(m, "CartesianControl",
         "1 kHz Cartesian pose streaming controller.\n\n"
-        "Wraps libfranka's start_cartesian_pose_control + an internal C++ RT\n"
-        "thread.  Python feeds target poses at any rate via set_target_pose;\n"
-        "the RT thread interpolates to 1 kHz, runs franka::limitRate, jump\n"
-        "detection, and writeOnce, all decoupled from the Python GIL.")
+        "Runs libfranka robot.control(callback, mode, limit_rate=true) on an\n"
+        "internal C++ RT thread. Python feeds target poses at any rate via\n"
+        "set_target_pose; the callback performs jump detection and a continuous\n"
+        "jerk-limited OTG step before returning the next 1 kHz pose sample.")
         .def("set_target_pose", &PyCartesianControl::setTargetPose,
              py::arg("O_T_EE"),
              "Enqueue a 4×4 column-major pose target.  Non-blocking.")
