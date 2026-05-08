@@ -31,9 +31,27 @@
 namespace py = pybind11;
 using namespace franka_rt;
 
+// ---------------------------------------------------------------------------
+// All Python-binding wrapper classes (PyRobot, PyJointPositionControl,
+// PyCartesianControl, the PyControllerMode / PyRealtimeConfig enums, and
+// helper functions) live inside the anonymous namespace below.
+//
+// Why: pybind11 keys its type registry on `std::type_index(typeid(T))`.
+// With pybind11 v11 internals shared across all loaded extension modules,
+// two unrelated .so files that each define a class named `PyRobot` at
+// file scope (with default linkage) end up with the SAME type_index and
+// the second one to load throws:
+//     ImportError: generic_type: type "Robot" is already registered!
+//
+// Putting our wrappers in an anonymous namespace gives them
+// translation-unit-local linkage; their typeid() is unique per .so, so
+// no collision with pyarx / flexiv_rt / etc that ship their own PyRobot.
+// ---------------------------------------------------------------------------
+namespace {
+
 // ---- libfranka-state translation helpers ----
 
-static RobotMode ConvertRobotMode(franka::RobotMode m) {
+RobotMode ConvertRobotMode(franka::RobotMode m) {
     switch (m) {
         case franka::RobotMode::kIdle:                    return RobotMode::Idle;
         case franka::RobotMode::kMove:                    return RobotMode::Move;
@@ -464,6 +482,9 @@ public:
 private:
     CartesianControl ctrl_;
 };
+
+}  // anonymous namespace — closes the wrapper-type sandbox; PYBIND11_MODULE
+   // below stays at file scope as required by the pybind11 macro.
 
 PYBIND11_MODULE(_franka_rt, m) {
     m.doc() = "libpyfranka — 1 kHz Python real-time control for Franka FR3.";
