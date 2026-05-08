@@ -2,11 +2,9 @@
 #include <array>
 #include <atomic>
 #include <chrono>
-#include <memory>
 #include <mutex>
 #include <thread>
 
-#include <franka/active_control_base.h>
 #include <franka/robot.h>
 
 #include "realtime_control/cartesian_state.hpp"
@@ -15,7 +13,6 @@
 
 namespace franka_rt {
 
-/// Selects which libfranka built-in controller tracks the streamed pose.
 /// Selects which libfranka built-in controller tracks the streamed pose.
 /// Naming mirrors pylibfranka.ControllerMode (no k prefix; member names
 /// match upstream).
@@ -44,16 +41,16 @@ struct PoseCommand {
 /// 1 kHz Cartesian-pose streaming controller.
 ///
 /// Architecture:
-///   Python `setTargetPose(...)` → SPSC ring buffer → RT thread reads at
-///   1 kHz → LinearTrajectory interpolates between sparse user commands →
-///   ClampCartesianPose4x4 enforces per-cycle vel limits → libfranka's
-///   internal kCartesianImpedance / kJointImpedance controller does the
-///   actual IK + tracking → motors.
+///   Python `setTargetPose(...)` → SPSC ring buffer → libfranka
+///   robot.control(callback, mode, limit_rate=true) at 1 kHz → continuous
+///   jerk-limited OTG follows sparse user commands → libfranka's internal
+///   kCartesianImpedance / kJointImpedance controller does the actual IK +
+///   tracking → motors.
 ///
 /// Safety mechanisms (all run every 1 ms cycle):
 ///   - finite check + isHomogeneousTransformation on every input
 ///   - adaptive jump detection scaled by measured Python command interval
-///   - per-cycle velocity SLERP clamp
+///   - continuous velocity/acceleration state; no segment-boundary re-init
 ///   - state.current_errors triggers immediate e-stop (hold last pose)
 ///   - command timeout: hold last pose forever (no e-stop)
 class CartesianControl {
@@ -90,7 +87,6 @@ private:
 
     franka::Robot& robot_;
     ControllerMode mode_;
-    std::unique_ptr<franka::ActiveControlBase> ac_;
     std::thread rt_thread_;
 
     std::atomic<bool> running_{false};
