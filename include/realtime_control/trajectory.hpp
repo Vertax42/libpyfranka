@@ -3,7 +3,6 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <initializer_list>
 
 namespace franka_rt {
 
@@ -199,105 +198,6 @@ public:
 private:
     std::array<double, 3> p0_{}, p1_{};
     std::array<double, 4> q0_{1, 0, 0, 0}, q1_{1, 0, 0, 0};
-    uint32_t total_steps_ = 0, current_step_ = 0;
-    bool active_ = false, cancelled_ = false;
-};
-
-/// Constant-velocity (linear) pose trajectory.
-class LinearTrajectory {
-public:
-    void init(const std::array<double, 16>& start_pose,
-              const std::array<double, 16>& end_pose,
-              double duration_sec) noexcept {
-        detail::mat4ToPosQuat(start_pose, p0_, q0_);
-        detail::mat4ToPosQuat(end_pose, p1_, q1_);
-        if (detail::quatDot(q0_, q1_) < 0.0) {
-            for (int i = 0; i < 4; ++i) q1_[i] = -q1_[i];
-        }
-        if (duration_sec <= 0.0) duration_sec = 0.001;
-        total_steps_ = std::max<uint32_t>(1, static_cast<uint32_t>(duration_sec * 1000.0));
-        current_step_ = 0;
-        active_ = true;
-        cancelled_ = false;
-    }
-    bool step(std::array<double, 16>& out_pose) noexcept {
-        if (!active_ || cancelled_) return false;
-        current_step_++;
-        if (current_step_ >= total_steps_) {
-            detail::posQuatToMat4(p1_, q1_, out_pose);
-            active_ = false;
-            return false;
-        }
-        double t = static_cast<double>(current_step_) / total_steps_;
-        std::array<double, 3> p;
-        for (int i = 0; i < 3; ++i) p[i] = p0_[i] + t * (p1_[i] - p0_[i]);
-        std::array<double, 4> q;
-        detail::slerp(q0_, q1_, t, q);
-        detail::posQuatToMat4(p, q, out_pose);
-        return true;
-    }
-    void cancel() noexcept { cancelled_ = true; active_ = false; }
-    bool isActive() const noexcept { return active_ && !cancelled_; }
-
-private:
-    std::array<double, 3> p0_{}, p1_{};
-    std::array<double, 4> q0_{1, 0, 0, 0}, q1_{1, 0, 0, 0};
-    uint32_t total_steps_ = 0, current_step_ = 0;
-    bool active_ = false, cancelled_ = false;
-};
-
-/// Joint-space linear trajectory (per-joint constant velocity).
-class JointLinearTrajectory {
-public:
-    static constexpr double kMaxJointVel = 1.5;  // rad/s
-    static constexpr double kMinDuration = 0.5;
-
-    static double computeDuration(const std::array<double, 7>& q0,
-                                  const std::array<double, 7>& q1,
-                                  double max_vel = kMaxJointVel,
-                                  double min_dur = kMinDuration) noexcept {
-        double max_delta = 0;
-        for (int i = 0; i < 7; ++i) {
-            double d = std::abs(q1[i] - q0[i]);
-            if (d > max_delta) max_delta = d;
-        }
-        double t = (max_vel > 0) ? max_delta / max_vel : min_dur;
-        return std::max(t, min_dur);
-    }
-
-    void init(const std::array<double, 7>& start_q,
-              const std::array<double, 7>& end_q,
-              double duration_sec) noexcept {
-        q0_ = start_q;
-        q1_ = end_q;
-        if (duration_sec <= 0.0) duration_sec = computeDuration(start_q, end_q);
-        total_steps_ = std::max<uint32_t>(1, static_cast<uint32_t>(duration_sec * 1000.0));
-        current_step_ = 0;
-        active_ = true;
-        cancelled_ = false;
-    }
-
-    bool step(std::array<double, 7>& out_q) noexcept {
-        if (!active_ || cancelled_) return false;
-        current_step_++;
-        if (current_step_ >= total_steps_) {
-            out_q = q1_;
-            active_ = false;
-            return false;
-        }
-        double t = static_cast<double>(current_step_) / total_steps_;
-        // Min-jerk for joint motion (smoother than linear)
-        double t2 = t * t, t3 = t2 * t;
-        double s = 10.0 * t3 - 15.0 * t3 * t + 6.0 * t3 * t2;
-        for (int i = 0; i < 7; ++i) out_q[i] = q0_[i] + s * (q1_[i] - q0_[i]);
-        return true;
-    }
-
-    void cancel() noexcept { cancelled_ = true; active_ = false; }
-    bool isActive() const noexcept { return active_ && !cancelled_; }
-
-private:
-    std::array<double, 7> q0_{}, q1_{};
     uint32_t total_steps_ = 0, current_step_ = 0;
     bool active_ = false, cancelled_ = false;
 };
