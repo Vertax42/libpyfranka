@@ -1,39 +1,46 @@
-"""Smoke tests that verify the module loads and surface API exists.
+"""Smoke tests that verify the module loads and the Python surface API exists.
 
-Does NOT require a real robot — only validates the Python-side surface.
+Does NOT require a real robot — only validates the Python-side bindings.
 """
 
 import importlib
-
-import numpy as np
 
 
 def test_module_imports():
     fr = importlib.import_module("franka_rt")
     for name in [
         "Robot",
+        "RobotMode",
+        "RealtimeConfig",
+        "ControllerMode",
         "JointPositionControl",
-        "JointTorqueControl",
-        "CartesianPoseControl",
-        "CartesianImpedanceControl",
+        "CartesianControl",
         "FrankaException",
+        "ControlException",
+        "CommandException",
         "NetworkException",
     ]:
         assert hasattr(fr, name), f"franka_rt missing attribute {name}"
 
 
+def test_controller_mode_enum_values():
+    fr = importlib.import_module("franka_rt")
+    assert hasattr(fr.ControllerMode, "JointImpedance")
+    assert hasattr(fr.ControllerMode, "CartesianImpedance")
+
+
+def test_robot_mode_enum_values():
+    fr = importlib.import_module("franka_rt")
+    for name in ["Idle", "Move", "Reflex", "UserStopped"]:
+        assert hasattr(fr.RobotMode, name), f"RobotMode missing {name}"
+
+
 def test_robot_constructor_invalid_address_raises():
-    """Connecting to a bogus address should raise NetworkException, not crash."""
+    """Connecting to a bogus address must raise, not crash."""
     fr = importlib.import_module("franka_rt")
     raised = False
     try:
-        # 0.0.0.0 is unroutable as a peer — this should fail fast.
-        _ = fr.Robot("0.0.0.0", "ignore")
-    except fr.NetworkException:
-        raised = True
-    except fr.FrankaException:
-        raised = True
-    except Exception:
-        # Some libfranka versions surface a generic runtime_error
+        _ = fr.Robot("0.0.0.0", fr.RealtimeConfig.kIgnore)
+    except (fr.NetworkException, fr.FrankaException, Exception):
         raised = True
     assert raised, "expected an exception when connecting to 0.0.0.0"
